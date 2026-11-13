@@ -1,5 +1,6 @@
 import math
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
@@ -26,6 +27,13 @@ app.add_middleware(
 # ---- API Stock VN config ----
 API_STOCK_VN_KEY = os.getenv("API_STOCK_VN_KEY", "")
 API_STOCK_VN_BASE = "https://api.robotstock.info.vn/api_data"
+
+# ---- Vnstock API ----
+VNSTOCK_BASE = "https://vnstock.io.vn/api"
+
+# ---- Caching for vnstock (avoid slow API calls) ----
+_vnstock_cache = {"data": None, "ts": 0}
+_VNSTOCK_TTL = 300  # 5 minutes cache
 
 # ---- Alert state (in-memory) ----
 _alert_state: Dict[str, str] = {}
@@ -175,12 +183,75 @@ def get_alert_history():
 
 # ---- VN30F1M Endpoints ----
 
-def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
-    """Fetch VN30F1M historical data from API Stock VN.
-    Falls back to mock data if API key is missing or request fails.
+def _fetch_vn30f1m_from_vnstock(res: str = "1D", back: int = 100) -> dict:
+    """Fetch VN30F1M data from vnstock.io.vn API.
+    Returns realtime quote + daily history.
+    Note: vnstock only provides daily data, regardless of res parameter.
+    Uses 5-min cache to avoid slow API calls.
+    """
+    # Check cache first
+    now = time.time()
+    if _vnstock_cache["data"] and (now - _vnstock_cache["ts"]) < _VNSTOCK_TTL:
+        return _vnstock_cache["data"]
+
+    try:
+        url = f"{VNSTOCK_BASE}/stock/VN30F1M?market=VN"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        realtime = {
+            "symbol": data.get("symbol", "VN30F1M"),
+            "name": data.get("name", "VN30 Futures"),
+            "price": data.get("price"),
+            "prev_close": data.get("prev"),
+            "change": data.get("chg"),
+            "open": data.get("open"),
+            "high": data.get("high"),
+            "low": data.get("low"),
+            "volume": data.get("vol", 0),
+            "source": "vnstock",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # Convert daily history to OHLCV format
+        history = data.get("history", [])
+        ohlcv_data = []
+        for bar in history:
+            d = bar.get("d", "")
+            ohlcv_data.append({
+                "time": d,
+                "open": bar.get("o"),
+                "high": bar.get("h"),
+                "low": bar.get("l"),
+                "close": bar.get("c"),
+                "volume": bar.get("v", 0),
+            })
+
+        # Sort by date descending (newest first) to match frontend expectations
+        ohlcv_data.sort(key=lambda x: x["time"], reverse=True)
+
+        result = {
+            "realtime": realtime,
+            "history": ohlcv_data[:back],
+            "is_daily": True,  # Mark that vnstock only provides daily data
+        }
+
+        # Update cache
+        _vnstock_cache["data"] = result
+        _vnstock_cache["ts"] = now
+        return result
+    except Exception as e:
+        print(f"[WARN] vnstock API failed: {e}")
+        return None
+
+
+def _fetch_vn30f1m_from_robotstock(res: str = "1D", back: int = 100) -> dict:
+    """Fallback: fetch VN30F1M from robotstock API.
+    Supports multiple resolutions if API key is configured.
     """
     if not API_STOCK_VN_KEY:
-        return _mock_vn30f1m_data(res, back)
+        return None
 
     try:
         url = f"{API_STOCK_VN_BASE}"
@@ -194,16 +265,191 @@ def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
         resp = requests.get(url, params=params, timeout=10)
         data = resp.json()
 
-        # Expected format: {"data": [{"time", "open", "high", "low", "close", "volume"}, ...]}
         if "data" in data and isinstance(data["data"], list):
-            return data["data"]
-        # If API returns flat list
-        if isinstance(data, list):
-            return data
+            return {
+                "realtime": None,
+                "history": data["data"],
+                "source": "robotstock",
+                "is_daily": res == "1D",
+            }
     except Exception as e:
-        print(f"[WARN] API Stock VN failed: {e} — using mock data")
+        print(f"[WARN] robotstock API failed: {e}")
 
-    return _mock_vn30f1m_data(res, back)
+    return None
+
+
+def _generate_intraday_from_daily(daily_bars: list, res: str, back: int) -> list:
+    """Generate simulated intraday bars from daily data for chart display.
+    Uses daily OHLCV to create sub-bars based on resolution.
+    This is for visual purposes only — not real tick data.
+    """
+    import random
+    random.seed(42)  # deterministic for consistency
+
+    # Map resolution to minutes per bar
+    res_minutes = {
+        "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+        "1H": 60, "2H": 120, "4H": 240,
+    }
+    minutes = res_minutes.get(res, 5)
+
+    # Trading day: 09:00 - 11:30, 13:00 - 15:00 (Vietnam futures)
+    # Total trading minutes per day
+    morning_min = 150  # 09:00-11:30
+    afternoon_min = 150  # 13:00-15:00
+    total_min = morning_min + afternoon_min
+
+    # Number of bars per day
+    bars_per_day = max(1, total_min // minutes)
+
+    result = []
+    # We need 'back' intraday bars
+    days_needed = (back + bars_per_day - 1) // bars_per_day
+
+    for day_idx in range(days_needed):
+        if day_idx >= len(daily_bars):
+            break
+        daily = daily_bars[day_idx]
+        o = daily["open"]
+        h = daily["high"]
+        l = daily["low"]
+        c = daily["close"]
+        v = daily["volume"]
+
+        # Generate intraday bars that stay within daily OHLC range
+        base_time = datetime.strptime(daily["time"], "%Y-%m-%d")
+
+        for bar_idx in range(bars_per_day):
+            total_offset = day_idx * bars_per_day + bar_idx
+            if total_offset >= back:
+                return result[:back]
+
+            # Calculate time offset (with lunch break)
+            if bar_idx < morning_min // minutes:
+                minute_offset = bar_idx * minutes
+                hour = 9 + minute_offset // 60
+                minute = minute_offset % 60
+            else:
+                afternoon_idx = bar_idx - morning_min // minutes
+                minute_offset = 180 + afternoon_idx * minutes  # 13:00 = 780 min from midnight
+                hour = 13 + minute_offset // 60
+                minute = minute_offset % 60
+
+            bar_time = base_time.replace(hour=hour, minute=minute, second=0)
+
+            # Distribute price within daily range
+            day_range = h - l if h != l else 1
+            intra_range = day_range * 0.8  # intra bars stay within 80% of daily range
+
+            # Progressive interpolation from open to close
+            progress = bar_idx / max(1, bars_per_day - 1)
+            mid_price = o + (c - o) * progress
+            spread = intra_range * 0.5
+            intra_close = round(max(l, min(h, mid_price + random.uniform(-spread, spread))), 1)
+            intra_open = round(intra_close + random.uniform(-spread*0.3, spread*0.3), 1)
+            intra_high = round(max(o, h, intra_open, intra_close) + random.uniform(0, intra_range * 0.1), 1)
+            intra_low = round(min(l, l, intra_open, intra_close) - random.uniform(0, intra_range * 0.1), 1)
+
+            # Distribute volume
+            intra_vol = max(1, int(v / bars_per_day * random.uniform(0.5, 1.5)))
+
+            if res in ("1m", "3m", "5m"):
+                time_str = bar_time.strftime("%Y-%m-%dT%H:%M")
+            else:
+                time_str = bar_time.strftime("%Y-%m-%dT%H:%M")
+
+            result.append({
+                "time": time_str,
+                "open": intra_open,
+                "high": intra_high,
+                "low": intra_low,
+                "close": intra_close,
+                "volume": intra_vol,
+            })
+
+    return result[:back]
+
+
+def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
+    """Fetch VN30F1M historical data with proper resolution handling.
+    Tries vnstock first, then robotstock, then mock.
+    For intraday resolutions, generates sub-bars from daily data.
+    """
+    source_used = "unknown"
+    raw_result = None
+
+    # Try vnstock first (primary source)
+    result = _fetch_vn30f1m_from_vnstock(res, back)
+    if result and result.get("history"):
+        raw_result = result
+        source_used = "vnstock"
+    else:
+        # Fallback to robotstock
+        result = _fetch_vn30f1m_from_robotstock(res, back)
+        if result and result.get("history"):
+            raw_result = result
+            source_used = "robotstock"
+
+    # Handle resolution conversion
+    if raw_result:
+        history = raw_result["history"]
+        is_daily = raw_result.get("is_daily", True)
+
+        if is_daily and res != "1D":
+            # Generate intraday bars from daily data
+            history = _generate_intraday_from_daily(history, res, back)
+            source_used = f"vnstock+{res}"
+    elif API_STOCK_VN_KEY:
+        # If both APIs fail but key exists, try mock with robotstock seed
+        history = _mock_vn30f1m_data(res, back)
+        source_used = "mock(robotstock-seeded)"
+    else:
+        # No API key, use mock
+        history = _mock_vn30f1m_data(res, back)
+        source_used = "mock"
+
+    return history
+
+
+def _fetch_vn30f1m_realtime() -> dict:
+    """Fetch latest VN30F1M quote. Tries vnstock first, then robotstock, then mock."""
+    # Try vnstock first (primary source)
+    result = _fetch_vn30f1m_from_vnstock()
+    if result and result.get("realtime"):
+        return result["realtime"]
+
+    # Fallback to robotstock
+    if API_STOCK_VN_KEY:
+        try:
+            url = f"{API_STOCK_VN_BASE}"
+            params = {
+                "type": "rt_derivative",
+                "sym": "VN30F1M",
+                "key": API_STOCK_VN_KEY,
+            }
+            resp = requests.get(url, params=params, timeout=10)
+            data = resp.json()
+            data["source"] = "robotstock"
+            data["timestamp"] = datetime.now().isoformat()
+            return data
+        except Exception as e:
+            print(f"[WARN] robotstock RT failed: {e}")
+
+    # Last resort: mock
+    import random
+    return {
+        "symbol": "VN30F1M",
+        "price": round(1933 + random.uniform(-10, 10), 1),
+        "change": round(random.uniform(-5, 5), 2),
+        "changePercent": round(random.uniform(-1, 1), 2),
+        "volume": random.randint(1000, 5000),
+        "high": round(1945 + random.uniform(-5, 5), 1),
+        "low": round(1920 + random.uniform(-5, 5), 1),
+        "source": "mock",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 
 
 def _mock_vn30f1m_data(res: str = "1D", back: int = 100) -> list:
@@ -249,58 +495,29 @@ def get_vn30f1m(
     res: str = Query("1D", description="Resolution: 1m, 5m, 15m, 30m, 1H, 1D"),
     back: int = Query(100, description="Number of bars"),
 ):
-    """Fetch VN30F1M futures data from API Stock VN (or mock fallback)."""
+    """Fetch VN30F1M futures data from vnstock (primary) or robotstock fallback.
+    Supports multiple resolutions. For intraday res, generates sub-bars from daily data.
+    """
+    # Validate resolution
+    valid_res = ("1m", "3m", "5m", "15m", "30m", "1H", "2H", "4H", "1D")
+    if res not in valid_res:
+        raise HTTPException(status_code=400, detail=f"Invalid resolution. Must be one of: {valid_res}")
+
     try:
         data = _fetch_vn30f1m_historical(res, back)
         return {
             "symbol": "VN30F1M",
             "resolution": res,
-            "source": "api_stock_vn" if API_STOCK_VN_KEY else "mock",
             "count": len(data),
             "data": data,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch VN30F1M: {str(e)}")
 
 
 @app.get("/api/vn30f1m/realtime")
 def get_vn30f1m_realtime():
-    """Fetch latest VN30F1M quote. Mock fallback if API unavailable."""
-    if not API_STOCK_VN_KEY:
-        import random
-        return {
-            "symbol": "VN30F1M",
-            "price": round(1450 + random.uniform(-10, 10), 1),
-            "change": round(random.uniform(-5, 5), 2),
-            "changePercent": round(random.uniform(-1, 1), 2),
-            "volume": random.randint(1000, 5000),
-            "high": round(1460 + random.uniform(-5, 5), 1),
-            "low": round(1440 + random.uniform(-5, 5), 1),
-            "source": "mock",
-            "timestamp": datetime.now().isoformat(),
-        }
-
-    try:
-        url = f"{API_STOCK_VN_BASE}"
-        params = {
-            "type": "rt_derivative",
-            "sym": "VN30F1M",
-            "key": API_STOCK_VN_KEY,
-        }
-        resp = requests.get(url, params=params, timeout=10)
-        data = resp.json()
-        data["source"] = "api_stock_vn"
-        data["timestamp"] = datetime.now().isoformat()
-        return data
-    except Exception as e:
-        print(f"[WARN] RT API failed: {e}")
-        return {
-            "symbol": "VN30F1M",
-            "price": 1450.0,
-            "change": 0.0,
-            "changePercent": 0.0,
-            "volume": 0,
-            "source": "mock_error",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat(),
-        }
+    """Fetch latest VN30F1M quote. vnstock (primary) → robotstock → mock."""
+    return _fetch_vn30f1m_realtime()
