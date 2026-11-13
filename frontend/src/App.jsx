@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createChart, ColorType } from 'lightweight-charts'
 
 const API = 'http://localhost:8000/api'
-const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
+const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'VN30F1M']
 const INTERVALS = ['1m', '5m', '15m', '1h']
 
 export default function App() {
@@ -22,15 +22,38 @@ export default function App() {
   // Fetch candle data from backend
   async function fetchCandles() {
     try {
-      const res = await fetch(`${API}/ohlcv?symbol=${encodeURIComponent(symbol)}&interval=${interval}`)
-      const json = await res.json()
-      const chartData = json.data.map(d => ({
-        time: Math.floor(d.time / 1000),
-        open: parseFloat(d.open),
-        high: parseFloat(d.high),
-        low: parseFloat(d.low),
-        close: parseFloat(d.close),
-      }))
+      let chartData
+      if (symbol === 'VN30F1M') {
+        // VN30F1M uses dedicated endpoint with different data format
+        const res = await fetch(`${API}/vn30f1m?res=${interval}&back=500`)
+        const json = await res.json()
+        chartData = json.data.map(d => {
+          // Parse "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD" to Unix timestamp
+          let ts
+          if (d.time.includes(':')) {
+            ts = new Date(d.time.replace(' ', 'T')).getTime() / 1000
+          } else {
+            ts = new Date(d.time + 'T00:00:00').getTime() / 1000
+          }
+          return {
+            time: Math.floor(ts),
+            open: parseFloat(d.open),
+            high: parseFloat(d.high),
+            low: parseFloat(d.low),
+            close: parseFloat(d.close),
+          }
+        })
+      } else {
+        const res = await fetch(`${API}/ohlcv?symbol=${encodeURIComponent(symbol)}&interval=${interval}`)
+        const json = await res.json()
+        chartData = json.data.map(d => ({
+          time: Math.floor(d.time / 1000),
+          open: parseFloat(d.open),
+          high: parseFloat(d.high),
+          low: parseFloat(d.low),
+          close: parseFloat(d.close),
+        }))
+      }
       
       if (candleSeriesRef.current) {
         candleSeriesRef.current.setData(chartData)
@@ -43,6 +66,12 @@ export default function App() {
   // Fetch RSI data from backend
   async function fetchRsi() {
     try {
+      // VN30F1M: no RSI from Binance, skip RSI panel
+      if (symbol === 'VN30F1M') {
+        setLatestRsi(null)
+        setAlertState('neutral')
+        return
+      }
       const res = await fetch(`${API}/rsi?symbol=${encodeURIComponent(symbol)}&interval=${interval}`)
       const json = await res.json()
       

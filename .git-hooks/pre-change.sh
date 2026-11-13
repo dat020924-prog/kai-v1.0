@@ -16,11 +16,16 @@ git add -A
 git commit -m "pre-change backup $(date '+%Y-%m-%d %H:%M:%S')"
 
 # Get next tag number
-LAST_TAG=$(git tag -l 'v*' | sort -V | tail -1)
+LAST_TAG=$(git tag -l 'v*' | grep -E '^v[0-9]' | sort -V | tail -1)
 if [[ -z "$LAST_TAG" ]]; then
-  NEXT_NUM=0
+  NEXT_NUM=1
 else
-  NEXT_NUM=$((10#${LAST_TAG#v} + 1))
+  # Extract numeric part, split by dot
+  NUM_PART=${LAST_TAG#v}
+  IFS='.' read -ra PARTS <<< "$NUM_PART"
+  MAJOR=${PARTS[0]:-0}
+  MINOR=${PARTS[1]:-0}
+  NEXT_NUM="${MAJOR}.${((MINOR + 1))}"
 fi
 NEXT_TAG="v${NEXT_NUM}"
 git tag "$NEXT_TAG"
