@@ -1,7 +1,7 @@
 import math
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 
 from fastapi import FastAPI, Query, HTTPException
@@ -117,13 +117,33 @@ def get_symbols():
 @app.get("/api/ohlcv")
 def get_ohlcv(
     symbol: str = Query("BTC/USDT"),
-    interval: str = Query("1m"),
+    resolution: str = Query("1D", description="Resolution: 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 1D"),
+    limit: int = Query(100, description="Number of bars"),
 ):
-    """Fetch OHLCV data from Binance."""
+    """Fetch OHLCV data from Binance or vnstock for Vietnamese stocks."""
     try:
-        df = _fetch_ohlcv(symbol, interval)
+        # Validate resolution
+        valid_res = ("1m", "3m", "5m", "15m", "30m", "1H", "2H", "4H", "1D")
+        if resolution not in valid_res:
+            raise HTTPException(status_code=400, detail=f"Invalid resolution. Must be one of: {valid_res}")
+        
+        # Check if it's a Vietnamese stock
+        vn_symbols = ["VN30", "VN30F1M", "VNINDEX", "HNX30", "HNXINDEX"]
+        if symbol in vn_symbols or get_symbol_data(symbol, 1):
+            # Fetch from vnstock API or local data
+            return _get_vn_stock_ohlcv(symbol, resolution, limit)
+        
+        # Otherwise use Binance
+        # Map resolution to ccxt timeframe
+        timeframe_map = {
+            "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1H": "1h", "2H": "2h", "4H": "4h", "1D": "1d"
+        }
+        timeframe = timeframe_map.get(resolution, "1m")
+        
+        df = _fetch_ohlcv(symbol, timeframe)
         result = []
-        for idx, row in df.iterrows():
+        for idx, row in df.head(limit).iterrows():
             result.append({
                 "time": int(idx.timestamp()) * 1000,
                 "open": float(row["open"]),
@@ -134,11 +154,85 @@ def get_ohlcv(
             })
         return {
             "symbol": symbol,
-            "interval": interval,
+            "interval": resolution,
             "data": result,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch data: {str(e)}")
+
+
+def _get_vn_stock_ohlcv(symbol: str, res: str = "1D", limit: int = 100) -> dict:
+    """Fetch OHLCV data for Vietnamese stocks via vnstock API or local data."""
+    try:
+        # Try vnstock API first
+        url = f"{VNSTOCK_BASE}/stock/{symbol}?market=VN"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        # Convert vnstock history to OHLCV format
+        history = data.get("history", [])
+        # vnstock returns oldest-first; take the LAST `limit` bars (newest data)
+        history = history[-limit:] if len(history) > limit else history
+        ohlcv_data = []
+        for bar in history:
+            d = bar.get("d", "")
+            # Use UTC to avoid timezone offset issues
+            dt = datetime.strptime(d, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
+            ts = int(dt.replace(tzinfo=timezone.utc).timestamp()) * 1000
+            ohlcv_data.append({
+                "time": ts,
+                "open": bar.get("o"),
+                "high": bar.get("h"),
+                "low": bar.get("l"),
+                "close": bar.get("c"),
+                "volume": bar.get("v", 0),
+            })
+        
+        # Sort by time ascending for chart display
+        ohlcv_data.sort(key=lambda x: x["time"])
+        
+        return {
+            "symbol": symbol,
+            "interval": res,
+            "data": ohlcv_data,
+            "source": "vnstock",
+        }
+    except Exception as e:
+        print(f"[WARN] vnstock API failed for {symbol}: {e}")
+        # Fallback to local data
+        local_data = get_symbol_data(symbol, limit)
+        if local_data:
+            # Convert local data time strings to milliseconds timestamps
+            normalized = []
+            for bar in local_data:
+                t = bar.get("time", "")
+                if isinstance(t, str) and "-" in t:
+                    # Date string YYYY-MM-DD → ms (UTC)
+                    dt = datetime.strptime(t, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0)
+                    ts = int(dt.replace(tzinfo=timezone.utc).timestamp()) * 1000
+                elif isinstance(t, (int, float)):
+                    ts = t
+                else:
+                    ts = 0
+                normalized.append({
+                    "time": ts,
+                    "open": bar.get("open"),
+                    "high": bar.get("high"),
+                    "low": bar.get("low"),
+                    "close": bar.get("close"),
+                    "volume": bar.get("volume", 0),
+                })
+            normalized.sort(key=lambda x: x["time"])
+            return {
+                "symbol": symbol,
+                "interval": res,
+                "data": normalized,
+                "source": "local",
+            }
+        raise HTTPException(status_code=404, detail=f"No data found for {symbol}")
 
 
 @app.get("/api/rsi")
