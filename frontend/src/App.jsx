@@ -72,6 +72,25 @@ export default function App() {
     }
   }
 
+  // Switch symbol — clear old data immediately, then fetch new data
+  async function switchSymbol(newSymbol) {
+    // Clear old candle data immediately (no flash of old data)
+    if (candleSeriesRef.current) {
+      candleSeriesRef.current.setData([])
+    }
+    // Clear old RSI data immediately
+    if (rsiSeriesRef.current) {
+      rsiSeriesRef.current.setData([])
+    }
+    // Update refs so fetch functions read correct values
+    symbolRef.current = newSymbol
+    // Update state to trigger re-render
+    setSymbol(newSymbol)
+    // Fetch new data immediately (don't wait for useEffect)
+    await fetchCandles()
+    await fetchRsi()
+  }
+
   // Fetch RSI data from backend
   async function fetchRsi() {
     const sym = symbolRef.current
@@ -276,7 +295,7 @@ export default function App() {
       <div style={styles.topBar}>
         <span style={styles.logo}>📊 TradingViewKai</span>
         
-        <select value={symbol} onChange={e => setSymbol(e.target.value)} style={styles.select}>
+        <select value={symbol} onChange={e => switchSymbol(e.target.value)} style={styles.select}>
           {SYMBOLS.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
 
@@ -304,7 +323,7 @@ export default function App() {
           {SYMBOLS.map(s => (
             <div
               key={s}
-              onClick={() => setSymbol(s)}
+              onClick={() => switchSymbol(s)}
               style={{ ...styles.watchItem, ...(symbol === s ? styles.watchItemActive : {}) }}
             >
               <span>{s}</span>

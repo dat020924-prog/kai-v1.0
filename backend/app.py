@@ -235,6 +235,21 @@ def _get_vn_stock_ohlcv(symbol: str, res: str = "1D", limit: int = 100) -> dict:
         raise HTTPException(status_code=404, detail=f"No data found for {symbol}")
 
 
+# TradingView interval → ccxt timeframe mapping
+_TV_TO_CCXT = {
+    "1": "1m", "3": "3m", "5": "5m", "15": "15m", "30": "30m",
+    "60": "1h", "120": "2h", "240": "4h",
+    "1D": "1d", "1d": "1d", "D": "1d", "daily": "1d",
+    "1W": "1w", "1w": "1w", "W": "1w", "weekly": "1w",
+    "1M": "1M", "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1h": "1h", "2h": "2h", "4h": "4h",
+}
+
+def _tv_to_ccxt_interval(interval: str) -> str:
+    """Convert TradingView interval to ccxt timeframe."""
+    return _TV_TO_CCXT.get(interval, interval)
+
+
 @app.get("/api/rsi")
 def get_rsi(
     symbol: str = Query("BTC/USDT"),
@@ -243,7 +258,8 @@ def get_rsi(
 ):
     """Compute and return RSI for the given symbol."""
     try:
-        df = _fetch_ohlcv(symbol, interval)
+        timeframe = _tv_to_ccxt_interval(interval)
+        df = _fetch_ohlcv(symbol, timeframe)
         rsi_series = _compute_rsi(df["close"], length)
 
         result = []
