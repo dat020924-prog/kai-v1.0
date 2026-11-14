@@ -12,8 +12,12 @@ import ccxt
 import pandas as pd
 import ta  # TA-Lib wrapper for pandas
 import requests
+from stock_loader import load_all_data, get_symbol_data, get_latest_price, get_all_symbols
 
 load_dotenv()
+
+# Load stock data at startup
+load_all_data()
 
 app = FastAPI(title="TradingView Lite", version="1.0.0")
 
@@ -97,9 +101,16 @@ def health_check():
 @app.get("/api/symbols")
 def get_symbols():
     """Return supported symbols."""
+    # Get Vietnamese stocks from local data
+    vn_stocks = get_all_symbols()
+    
     return {
-        "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "VN30F1M"],
+        "symbols": [
+            "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
+            "VN30F1M", "VN30", "VNINDEX",
+        ] + vn_stocks[:50],  # Include top 50 Vietnamese stocks
         "default": "BTC/USDT",
+        "vn_stocks": vn_stocks,
     }
 
 
@@ -188,6 +199,7 @@ def _fetch_vn30f1m_from_vnstock(res: str = "1D", back: int = 100) -> dict:
     Returns realtime quote + daily history.
     Note: vnstock only provides daily data, regardless of res parameter.
     Uses 5-min cache to avoid slow API calls.
+    Falls back to local stock data if API fails.
     """
     # Check cache first
     now = time.time()
@@ -243,6 +255,15 @@ def _fetch_vn30f1m_from_vnstock(res: str = "1D", back: int = 100) -> dict:
         return result
     except Exception as e:
         print(f"[WARN] vnstock API failed: {e}")
+        # Fallback to local stock data
+        local_data = get_symbol_data("VN30F1M", back)
+        if local_data:
+            return {
+                "realtime": None,
+                "history": local_data,
+                "source": "local",
+                "is_daily": True,
+            }
         return None
 
 
