@@ -19,13 +19,21 @@ export default function App() {
   const [paused, setPaused] = useState(false)
   const [alerts, setAlerts] = useState([])
 
+  // Keep refs to always read latest symbol/interval inside async closures
+  const symbolRef = useRef(symbol)
+  const intervalRef = useRef(interval)
+  useEffect(() => { symbolRef.current = symbol }, [symbol])
+  useEffect(() => { intervalRef.current = interval }, [interval])
+
   // Fetch candle data from backend
   async function fetchCandles() {
+    const sym = symbolRef.current
+    const intv = intervalRef.current
     try {
       let chartData
-      if (symbol === 'VN30F1M') {
+      if (sym === 'VN30F1M') {
         // VN30F1M uses dedicated endpoint with different data format
-        const res = await fetch(`${API}/vn30f1m?res=${interval}&back=500`)
+        const res = await fetch(`${API}/vn30f1m?res=${intv}&back=500`)
         const json = await res.json()
         chartData = json.data.map(d => {
           // Parse "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD" to Unix timestamp
@@ -45,7 +53,7 @@ export default function App() {
         })
       } else {
         // BTC/ETH/SOL/VN30 all use standard OHLCV endpoint
-        const res = await fetch(`${API}/ohlcv?symbol=${encodeURIComponent(symbol)}&resolution=${interval}`)
+        const res = await fetch(`${API}/ohlcv?symbol=${encodeURIComponent(sym)}&resolution=${intv}`)
         const json = await res.json()
         chartData = json.data.map(d => ({
           time: Math.floor(d.time / 1000),
@@ -66,14 +74,16 @@ export default function App() {
 
   // Fetch RSI data from backend
   async function fetchRsi() {
+    const sym = symbolRef.current
+    const intv = intervalRef.current
     try {
       // VN30F1M/VN30: no RSI from vnstock, skip RSI panel
-      if (symbol === 'VN30F1M' || symbol === 'VN30') {
+      if (sym === 'VN30F1M' || sym === 'VN30') {
         setLatestRsi(null)
         setAlertState('neutral')
         return
       }
-      const res = await fetch(`${API}/rsi?symbol=${encodeURIComponent(symbol)}&interval=${interval}`)
+      const res = await fetch(`${API}/rsi?symbol=${encodeURIComponent(sym)}&interval=${intv}`)
       const json = await res.json()
       
       const chartData = (json.data || []).map(d => ({
@@ -91,10 +101,10 @@ export default function App() {
       if (json.alert && json.alert !== alertState) {
         const newAlert = {
           time: new Date().toLocaleTimeString('vi-VN'),
-          symbol,
+          symbol: sym,
           type: json.alert,
           rsi: json.latest_rsi,
-          timeframe: interval,
+          timeframe: intv,
         }
         setAlerts(prev => [newAlert, ...prev].slice(0, 20))
       }
