@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createChart, ColorType } from 'lightweight-charts'
 
 const API = 'http://localhost:8000/api'
-const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'VN30F1M']
+const SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'VN30F1M', 'VN30']
 const INTERVALS = ['1m', '5m', '15m', '1h']
 
 export default function App() {
@@ -44,7 +44,8 @@ export default function App() {
           }
         })
       } else {
-        const res = await fetch(`${API}/ohlcv?symbol=${encodeURIComponent(symbol)}&interval=${interval}`)
+        // BTC/ETH/SOL/VN30 all use standard OHLCV endpoint
+        const res = await fetch(`${API}/ohlcv?symbol=${encodeURIComponent(symbol)}&resolution=${interval}`)
         const json = await res.json()
         chartData = json.data.map(d => ({
           time: Math.floor(d.time / 1000),
@@ -66,8 +67,8 @@ export default function App() {
   // Fetch RSI data from backend
   async function fetchRsi() {
     try {
-      // VN30F1M: no RSI from Binance, skip RSI panel
-      if (symbol === 'VN30F1M') {
+      // VN30F1M/VN30: no RSI from vnstock, skip RSI panel
+      if (symbol === 'VN30F1M' || symbol === 'VN30') {
         setLatestRsi(null)
         setAlertState('neutral')
         return
