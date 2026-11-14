@@ -296,7 +296,7 @@ def _generate_intraday_from_daily(daily_bars: list, res: str, back: int) -> list
     # Trading day: 09:00 - 11:30, 13:00 - 15:00 (Vietnam futures)
     # Total trading minutes per day
     morning_min = 150  # 09:00-11:30
-    afternoon_min = 150  # 13:00-15:00
+    afternoon_min = 120  # 13:00-15:00 (NOT 150 — market closes at 15:00)
     total_min = morning_min + afternoon_min
 
     # Number of bars per day
@@ -331,9 +331,8 @@ def _generate_intraday_from_daily(daily_bars: list, res: str, back: int) -> list
                 minute = minute_offset % 60
             else:
                 afternoon_idx = bar_idx - morning_min // minutes
-                minute_offset = 180 + afternoon_idx * minutes  # 13:00 = 780 min from midnight
-                hour = 13 + minute_offset // 60
-                minute = minute_offset % 60
+                hour = 13 + afternoon_idx * minutes // 60
+                minute = (afternoon_idx * minutes) % 60
 
             bar_time = base_time.replace(hour=hour, minute=minute, second=0)
 
