@@ -1,6 +1,8 @@
 import math
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 
@@ -38,6 +40,11 @@ VNSTOCK_BASE = "https://vnstock.io.vn/api"
 # ---- Caching for vnstock (avoid slow API calls) ----
 _vnstock_cache = {"data": None, "ts": 0}
 _VNSTOCK_TTL = 300  # 5 minutes cache
+_vnstock_lock = threading.Lock()
+
+# Executor for blocking vnstock calls (prevents hanging the main thread)
+_vnstock_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vnstock")
+_VNSTOCK_REQ_TIMEOUT = 8  # seconds per HTTP request
 
 # ---- Alert state (in-memory) ----
 _alert_state: Dict[str, str] = {}
@@ -166,9 +173,9 @@ def get_ohlcv(
 def _get_vn_stock_ohlcv(symbol: str, res: str = "1D", limit: int = 100) -> dict:
     """Fetch OHLCV data for Vietnamese stocks via vnstock API or local data."""
     try:
-        # Try vnstock API first
+        # Try vnstock API first with timeout
         url = f"{VNSTOCK_BASE}/stock/{symbol}?market=VN"
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=_VNSTOCK_REQ_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         
@@ -304,6 +311,27 @@ def get_alert_history():
 
 # ---- VN30F1M Endpoints ----
 
+def _safe_requests_get(url, timeout=_VNSTOCK_REQ_TIMEOUT):
+    """Thread-safe requests.get with timeout. Raises on timeout or error."""
+    resp = requests.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return resp
+
+
+def _fetch_vn30f1m_from_vnstock_threaded(res: str = "1D", back: int = 100) -> dict:
+    """Run vnstock API call in a thread with overall timeout to prevent hanging."""
+    future = _vnstock_executor.submit(_fetch_vn30f1m_from_vnstock, res, back)
+    try:
+        return future.result(timeout=_VNSTOCK_REQ_TIMEOUT + 2)
+    except FuturesTimeoutError:
+        print("[WARN] vnstock API call timed out after {}s".format(_VNSTOCK_REQ_TIMEOUT + 2))
+        future.cancel(wait=False)
+        return None
+    except Exception as e:
+        print(f"[WARN] vnstock threaded call failed: {e}")
+        return None
+
+
 def _fetch_vn30f1m_from_vnstock(res: str = "1D", back: int = 100) -> dict:
     """Fetch VN30F1M data from vnstock.io.vn API.
     Returns realtime quote + daily history.
@@ -313,12 +341,13 @@ def _fetch_vn30f1m_from_vnstock(res: str = "1D", back: int = 100) -> dict:
     """
     # Check cache first
     now = time.time()
-    if _vnstock_cache["data"] and (now - _vnstock_cache["ts"]) < _VNSTOCK_TTL:
-        return _vnstock_cache["data"]
+    with _vnstock_lock:
+        if _vnstock_cache["data"] and (now - _vnstock_cache["ts"]) < _VNSTOCK_TTL:
+            return _vnstock_cache["data"]
 
     try:
         url = f"{VNSTOCK_BASE}/stock/VN30F1M?market=VN"
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, timeout=_VNSTOCK_REQ_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
 
@@ -359,21 +388,13 @@ def _fetch_vn30f1m_from_vnstock(res: str = "1D", back: int = 100) -> dict:
             "is_daily": True,  # Mark that vnstock only provides daily data
         }
 
-        # Update cache
-        _vnstock_cache["data"] = result
-        _vnstock_cache["ts"] = now
+        # Update cache (thread-safe)
+        with _vnstock_lock:
+            _vnstock_cache["data"] = result
+            _vnstock_cache["ts"] = now
         return result
     except Exception as e:
         print(f"[WARN] vnstock API failed: {e}")
-        # Fallback to local stock data
-        local_data = get_symbol_data("VN30F1M", back)
-        if local_data:
-            return {
-                "realtime": None,
-                "history": local_data,
-                "source": "local",
-                "is_daily": True,
-            }
         return None
 
 
@@ -510,8 +531,8 @@ def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
     is_simulated = False
     raw_result = None
 
-    # Try vnstock first (primary source)
-    result = _fetch_vn30f1m_from_vnstock(res, back)
+    # Try vnstock first (primary source) — use threaded version with timeout
+    result = _fetch_vn30f1m_from_vnstock_threaded(res, back)
     if result and result.get("history"):
         raw_result = result
         source_used = "vnstock"
@@ -550,8 +571,8 @@ def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
 
 def _fetch_vn30f1m_realtime() -> dict:
     """Fetch latest VN30F1M quote. Tries vnstock first, then robotstock, then mock."""
-    # Try vnstock first (primary source)
-    result = _fetch_vn30f1m_from_vnstock()
+    # Try vnstock first (primary source) — use threaded version with timeout
+    result = _fetch_vn30f1m_from_vnstock_threaded()
     if result and result.get("realtime"):
         return result["realtime"]
 
