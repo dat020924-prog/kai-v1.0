@@ -502,10 +502,12 @@ def _generate_intraday_from_daily(daily_bars: list, res: str, back: int) -> list
 
 def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
     """Fetch VN30F1M historical data with proper resolution handling.
-    Tries vnstock first, then robotstock, then mock.
-    For intraday resolutions, generates sub-bars from daily data.
+    Tries vnstock first, then robotstock, then mock with real seed.
+    For intraday resolutions, generates sub-bars from daily data (simulated).
+    Returns dict with 'data' and 'is_simulated' fields.
     """
     source_used = "unknown"
+    is_simulated = False
     raw_result = None
 
     # Try vnstock first (primary source)
@@ -513,12 +515,14 @@ def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
     if result and result.get("history"):
         raw_result = result
         source_used = "vnstock"
+        is_simulated = raw_result.get("is_simulated", False)
     else:
         # Fallback to robotstock
         result = _fetch_vn30f1m_from_robotstock(res, back)
         if result and result.get("history"):
             raw_result = result
             source_used = "robotstock"
+            is_simulated = raw_result.get("is_simulated", False)
 
     # Handle resolution conversion
     if raw_result:
@@ -526,19 +530,22 @@ def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
         is_daily = raw_result.get("is_daily", True)
 
         if is_daily and res != "1D":
-            # Generate intraday bars from daily data
+            # Generate intraday bars from daily data (simulated)
             history = _generate_intraday_from_daily(history, res, back)
             source_used = f"vnstock+{res}"
+            is_simulated = True
     elif API_STOCK_VN_KEY:
         # If both APIs fail but key exists, try mock with robotstock seed
         history = _mock_vn30f1m_data(res, back)
         source_used = "mock(robotstock-seeded)"
+        is_simulated = True
     else:
         # No API key, use mock
         history = _mock_vn30f1m_data(res, back)
         source_used = "mock"
+        is_simulated = True
 
-    return history
+    return {"data": history, "is_simulated": is_simulated, "source": source_used}
 
 
 def _fetch_vn30f1m_realtime() -> dict:
@@ -634,12 +641,14 @@ def get_vn30f1m(
         raise HTTPException(status_code=400, detail=f"Invalid resolution. Must be one of: {valid_res}")
 
     try:
-        data = _fetch_vn30f1m_historical(res, back)
+        result = _fetch_vn30f1m_historical(res, back)
         return {
             "symbol": "VN30F1M",
             "resolution": res,
-            "count": len(data),
-            "data": data,
+            "count": len(result["data"]),
+            "data": result["data"],
+            "is_simulated": result["is_simulated"],
+            "source": result.get("source", "unknown"),
         }
     except HTTPException:
         raise

@@ -29,6 +29,7 @@ export default function App() {
   async function fetchCandles() {
     const sym = symbolRef.current
     const intv = intervalRef.current
+    setLoading(true)
     try {
       let chartData
       if (sym === 'VN30F1M') {
@@ -69,6 +70,8 @@ export default function App() {
       }
     } catch (e) {
       console.error('Fetch candles failed:', e)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -130,6 +133,8 @@ export default function App() {
       setAlertState(json.alert || 'neutral')
     } catch (e) {
       console.error('Fetch RSI failed:', e)
+    } finally {
+      setLoading(false)
     }
   }
 
