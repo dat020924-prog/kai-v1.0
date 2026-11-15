@@ -6,7 +6,7 @@
 cd "$(dirname "$0")/.." || exit 1
 
 # Check for uncommitted changes
-if ! git diff --quiet 2>/dev/null && ! git ls-files --others --exclude-standard --quiet 2>/dev/null | grep -q .; then
+if git diff --quiet 2>/dev/null && git ls-files --others --exclude-standard --quiet 2>/dev/null | grep -q .; then
   echo "✅ No changes detected — skip backup."
   exit 0
 fi
@@ -25,9 +25,9 @@ else
   IFS='.' read -ra PARTS <<< "$NUM_PART"
   MAJOR=${PARTS[0]:-0}
   MINOR=${PARTS[1]:-0}
-  NEXT_NUM="${MAJOR}.${((MINOR + 1))}"
+  NEXT_MINOR=$((MINOR + 1))
+  NEXT_TAG="v${MAJOR}.${NEXT_MINOR}"
 fi
-NEXT_TAG="v${NEXT_NUM}"
 git tag "$NEXT_TAG"
 
 echo "✅ Backed up as $NEXT_TAG"
