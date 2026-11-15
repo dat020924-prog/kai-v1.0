@@ -130,7 +130,7 @@ def get_ohlcv(
     """Fetch OHLCV data from Binance or vnstock for Vietnamese stocks."""
     try:
         # Validate resolution
-        valid_res = ("1m", "3m", "5m", "15m", "30m", "1H", "2H", "4H", "1D")
+        valid_res = ("1m", "3m", "5m", "15m", "30m", "1H", "1h", "2H", "2h", "4H", "4h", "1D", "1d")
         if resolution not in valid_res:
             raise HTTPException(status_code=400, detail=f"Invalid resolution. Must be one of: {valid_res}")
         
@@ -551,6 +551,8 @@ def _fetch_vn30f1m_historical(res: str = "1D", back: int = 100) -> list:
         is_daily = raw_result.get("is_daily", True)
 
         if is_daily and res != "1D":
+            # vnstock returns descending (newest first); reverse to ascending for chart
+            history = list(reversed(history))
             # Generate intraday bars from daily data (simulated)
             history = _generate_intraday_from_daily(history, res, back)
             source_used = f"vnstock+{res}"
@@ -657,7 +659,7 @@ def get_vn30f1m(
     Supports multiple resolutions. For intraday res, generates sub-bars from daily data.
     """
     # Validate resolution
-    valid_res = ("1m", "3m", "5m", "15m", "30m", "1H", "2H", "4H", "1D")
+    valid_res = ("1m", "3m", "5m", "15m", "30m", "1H", "1h", "2H", "2h", "4H", "4h", "1D", "1d")
     if res not in valid_res:
         raise HTTPException(status_code=400, detail=f"Invalid resolution. Must be one of: {valid_res}")
 
@@ -681,3 +683,8 @@ def get_vn30f1m(
 def get_vn30f1m_realtime():
     """Fetch latest VN30F1M quote. vnstock (primary) → robotstock → mock."""
     return _fetch_vn30f1m_realtime()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

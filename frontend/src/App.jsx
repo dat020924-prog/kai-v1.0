@@ -7,9 +7,11 @@ const INTERVALS = ['1m', '5m', '15m', '1h']
 
 export default function App() {
   const chartRef = useRef(null)
+  const chartObjRef = useRef(null)
   const candleSeriesRef = useRef(null)
   const rsiSeriesRef = useRef(null)
   const rsiChartRef = useRef(null)
+  const rsiChartObjRef = useRef(null)
 
   const [symbol, setSymbol] = useState('BTC/USDT')
   const [interval, setInterval_] = useState('1m')
@@ -35,6 +37,10 @@ export default function App() {
       if (sym === 'VN30F1M') {
         // VN30F1M uses dedicated endpoint with different data format
         const res = await fetch(`${API}/vn30f1m?res=${intv}&back=500`)
+        if (!res.ok) {
+          console.error(`VN30F1M fetch failed: ${res.status} ${res.statusText}`)
+          return
+        }
         const json = await res.json()
         chartData = json.data.map(d => {
           // Parse "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD" to Unix timestamp
@@ -55,6 +61,10 @@ export default function App() {
       } else {
         // BTC/ETH/SOL/VN30 all use standard OHLCV endpoint
         const res = await fetch(`${API}/ohlcv?symbol=${encodeURIComponent(sym)}&resolution=${intv}`)
+        if (!res.ok) {
+          console.error(`OHLCV fetch failed: ${res.status} ${res.statusText}`)
+          return
+        }
         const json = await res.json()
         chartData = json.data.map(d => ({
           time: Math.floor(d.time / 1000),
@@ -106,6 +116,10 @@ export default function App() {
         return
       }
       const res = await fetch(`${API}/rsi?symbol=${encodeURIComponent(sym)}&interval=${intv}`)
+      if (!res.ok) {
+        console.error(`RSI fetch failed: ${res.status} ${res.statusText}`)
+        return
+      }
       const json = await res.json()
       
       const chartData = (json.data || []).map(d => ({
@@ -172,6 +186,7 @@ export default function App() {
     })
 
     candleSeriesRef.current = candleSeries
+    chartObjRef.current = chart
 
     // Resize observer
     const ro = new ResizeObserver(entries => {
@@ -235,6 +250,7 @@ export default function App() {
     })
 
     rsiSeriesRef.current = rsiSeries
+    rsiChartObjRef.current = rsiChart
 
     const ro2 = new ResizeObserver(entries => {
       for (const entry of entries) {
@@ -267,27 +283,29 @@ export default function App() {
 
   // Sync time scales between charts
   useEffect(() => {
-    if (!chartRef.current || !rsiChartRef.current) return
-    
-    const mainChart = chartRef.current.chart
-    const rsiChartObj = rsiChartRef.current.chart
-    if (mainChart && rsiChartObj) {
-      let syncingMainToRsi = false
-      let syncingRsiToMain = false
+    const mainChart = chartObjRef.current
+    const rsiChart = rsiChartObjRef.current
+    if (!mainChart || !rsiChart) return
 
-      mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-        if (!range || syncingRsiToRsi) return
-        syncingRsiToRsi = true
-        rsiChartObj.timeScale().setVisibleLogicalRange(range)
-        queueMicrotask(() => { syncingRsiToMain = false })
-      })
+    let syncingMainToRsi = false
+    let syncingRsiToMain = false
 
-      rsiChartObj.timeScale().subscribeVisibleLogicalRangeChange(range => {
-        if (!range || syncingRsiToMain) return
-        syncingRsiToMain = true
-        mainChart.timeScale().setVisibleLogicalRange(range)
-        queueMicrotask(() => { syncingMainToRsi = false })
-      })
+    mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (!range || syncingRsiToMain) return
+      syncingRsiToMain = true
+      rsiChart.timeScale().setVisibleLogicalRange(range)
+      queueMicrotask(() => { syncingRsiToMain = false })
+    })
+
+    rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (!range || syncingMainToRsi) return
+      syncingMainToRsi = true
+      mainChart.timeScale().setVisibleLogicalRange(range)
+      queueMicrotask(() => { syncingMainToRsi = false })
+    })
+
+    return () => {
+      // Cleanup subscriptions handled by chart.remove() in the init effects
     }
   }, [])
 
